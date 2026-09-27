@@ -151,6 +151,179 @@ func observationsCompletion(api *client) error {
 	if len(readBack.Observations) != 3 || readBack.Metrics == nil {
 		return errInvalidWorkflow("completed run lost observations or metrics")
 	}
+	if err := completionSettlesOnLastReading(api); err != nil {
+		return err
+	}
+	return nil
+}
+
+func completionSettlesOnLastReading(api *client) error {
+	formula, err := ensureApprovedFormula(api, "Completion Rising Tail Formula")
+	if err != nil {
+		return err
+	}
+	vessel, err := createCheckVessel(api, "VSL-203", 300)
+	if err != nil {
+		return err
+	}
+	started, err := createStartedRun(api, formula.ID, vessel.ID, "RUN-OBSERVATIONS-RISE")
+	if err != nil {
+		return err
+	}
+
+	base := time.Now().UTC().Add(10 * time.Second)
+	points := []struct {
+		gravity     float64
+		temperature float64
+	}{
+		{gravity: 1.050, temperature: 20.0},
+		{gravity: 1.032, temperature: 20.2},
+		{gravity: 1.018, temperature: 19.9},
+		{gravity: 1.020, temperature: 19.7},
+	}
+	version := started.Run.Version
+	var lastAccepted runView
+	for index, point := range points {
+		sequence := index + 1
+		response, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/observations",
+			map[string]any{
+				"sequence":      sequence,
+				"gravity":       point.gravity,
+				"temperature_c": point.temperature,
+				"observed_at":   verifiedAt(base, sequence),
+				"note":          fmt.Sprintf("observation %d", sequence),
+			}, ptrInt64(version))
+		if err != nil {
+			return err
+		}
+		if err := requireStatus(response, 200, "append observation"); err != nil {
+			return err
+		}
+		if err := response.decode(&lastAccepted); err != nil {
+			return err
+		}
+		version = lastAccepted.Version
+	}
+
+	excessiveRise, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/observations",
+		map[string]any{
+			"sequence":      5,
+			"gravity":       1.032,
+			"temperature_c": 20,
+			"observed_at":   verifiedAt(base, 5),
+			"note":          "excessive rise",
+		}, ptrInt64(version))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(excessiveRise, 409, string(domain.CodeObservationConflict),
+		"reject excessive gravity rise"); err != nil {
+		return err
+	}
+
+	prematureComplete, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/complete",
+		nil, ptrInt64(version))
+	if err != nil {
+		return err
+	}
+	if err := requireCode(prematureComplete, 409, string(domain.CodeRunState),
+		"complete a fermenting run"); err != nil {
+		return err
+	}
+
+	runAfterFailure, err := api.call("GET", "/v1/runs/"+started.Run.ID, nil, nil)
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(runAfterFailure, 200, "read run after failed completion"); err != nil {
+		return err
+	}
+	var runUnchanged runView
+	if err := runAfterFailure.decode(&runUnchanged); err != nil {
+		return err
+	}
+	if runUnchanged.Version != version ||
+		runUnchanged.State != domain.RunFermenting ||
+		!runUnchanged.UpdatedAt.Equal(lastAccepted.UpdatedAt) {
+		return errInvalidWorkflow("failed completion changed the run")
+	}
+
+	vesselAfterFailure, err := api.call("GET", "/v1/vessels/"+vessel.ID, nil, nil)
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(vesselAfterFailure, 200, "read vessel after failed completion"); err != nil {
+		return err
+	}
+	var vesselUnchanged vesselView
+	if err := vesselAfterFailure.decode(&vesselUnchanged); err != nil {
+		return err
+	}
+	if vesselUnchanged.Version != started.Vessel.Version ||
+		vesselUnchanged.State != domain.VesselInUse ||
+		!vesselUnchanged.UpdatedAt.Equal(started.Vessel.UpdatedAt) {
+		return errInvalidWorkflow("failed completion changed the vessel")
+	}
+
+	conditioningResponse, err := api.call("POST",
+		"/v1/runs/"+started.Run.ID+"/conditioning", nil, ptrInt64(version))
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(conditioningResponse, 200, "begin conditioning"); err != nil {
+		return err
+	}
+	var conditioning runView
+	if err := conditioningResponse.decode(&conditioning); err != nil {
+		return err
+	}
+	if err := requireRunState(conditioning, domain.RunConditioning); err != nil {
+		return err
+	}
+
+	completeResponse, err := api.call("POST", "/v1/runs/"+started.Run.ID+"/complete",
+		nil, ptrInt64(conditioning.Version))
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(completeResponse, 200, "complete run"); err != nil {
+		return err
+	}
+	var completed pairView
+	if err := completeResponse.decode(&completed); err != nil {
+		return err
+	}
+	if err := requireRunState(completed.Run, domain.RunCompleted); err != nil {
+		return err
+	}
+	if err := requireVesselState(completed.Vessel, domain.VesselCleaning); err != nil {
+		return err
+	}
+	if completed.Run.Metrics == nil ||
+		completed.Run.Metrics.ObservationCount != 4 ||
+		completed.Run.Metrics.FinalGravity != 1.02 ||
+		completed.Run.Metrics.ApparentAttenuation != 61.54 ||
+		completed.Run.Metrics.EstimatedAlcoholABV != 4.2 {
+		return errInvalidWorkflow("completion metrics did not settle on the last accepted observation")
+	}
+
+	readResponse, err := api.call("GET", "/v1/runs/"+started.Run.ID, nil, nil)
+	if err != nil {
+		return err
+	}
+	if err := requireStatus(readResponse, 200, "read completed run"); err != nil {
+		return err
+	}
+	var readBack runView
+	if err := readResponse.decode(&readBack); err != nil {
+		return err
+	}
+	if len(readBack.Observations) != 4 ||
+		readBack.Observations[3].Gravity != 1.02 ||
+		readBack.Metrics == nil ||
+		readBack.Metrics.FinalGravity != 1.02 {
+		return errInvalidWorkflow("completed run did not retain the rising tail observation")
+	}
 	return nil
 }
 

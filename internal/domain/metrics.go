@@ -9,40 +9,27 @@ type RunMetrics struct {
 	ObservationCount    int     `json:"observation_count"`
 }
 
-type ObservationWindowPolicy struct {
-	TrimTrailingRise  bool
-	MaximumStableRise float64
-	MinimumSamples    int
-}
-
 type ObservationWindow struct {
 	observations []GravityObservation
-	policy       ObservationWindowPolicy
 }
 
 func NewObservationWindow(
 	observations []GravityObservation,
-	policy ObservationWindowPolicy,
 ) ObservationWindow {
-	if policy.MaximumStableRise <= 0 {
-		policy.MaximumStableRise = 0.010
-	}
 	return ObservationWindow{
 		observations: append([]GravityObservation(nil), observations...),
-		policy:       policy,
 	}
 }
 
 func (w ObservationWindow) ObservationCount() int {
-	return len(w.metricObservations())
+	return len(w.observations)
 }
 
 func (w ObservationWindow) FinalObservation() (GravityObservation, bool) {
-	observations := w.metricObservations()
-	if len(observations) == 0 {
+	if len(w.observations) == 0 {
 		return GravityObservation{}, false
 	}
-	return observations[len(observations)-1], true
+	return w.observations[len(w.observations)-1], true
 }
 
 func (w ObservationWindow) Calculate(originalGravity float64) RunMetrics {
@@ -55,31 +42,6 @@ func (w ObservationWindow) Calculate(originalGravity float64) RunMetrics {
 		final.Gravity,
 		w.ObservationCount(),
 	)
-}
-
-func (w ObservationWindow) metricObservations() []GravityObservation {
-	observations := append([]GravityObservation(nil), w.observations...)
-	if !w.policy.TrimTrailingRise || len(observations) < 2 {
-		return observations
-	}
-	maximumRise := w.policy.MaximumStableRise
-	if maximumRise <= 0 {
-		maximumRise = 0.010
-	}
-	end := len(observations)
-	for end > 1 {
-		previous := observations[end-2]
-		latest := observations[end-1]
-		rise := latest.Gravity - previous.Gravity
-		if rise <= 0 || rise > maximumRise {
-			break
-		}
-		end--
-	}
-	if w.policy.MinimumSamples > 0 && end < w.policy.MinimumSamples {
-		return observations
-	}
-	return observations[:end]
 }
 
 func CalculateMetrics(originalGravity, finalGravity float64, count int) RunMetrics {

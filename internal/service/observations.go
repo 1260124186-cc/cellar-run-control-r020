@@ -79,7 +79,7 @@ func (s *Service) CompleteRun(
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "attached formula was not found")
 		}
-		window := completionObservationWindow(run)
+		window := domain.NewObservationWindow(run.Observations)
 		if err := run.Complete(
 			formula.TargetOriginalGravity,
 			window,
@@ -107,19 +107,4 @@ func (s *Service) CompleteRun(
 		return domain.FermentationRun{}, domain.Vessel{}, err
 	}
 	return updatedRun, updatedVessel, nil
-}
-
-func completionObservationWindow(
-	run domain.FermentationRun,
-) domain.ObservationWindow {
-	observations := make([]domain.GravityObservation, len(run.Observations))
-	copy(observations, run.Observations)
-	return domain.NewObservationWindow(
-		observations,
-		domain.ObservationWindowPolicy{
-			TrimTrailingRise:  true,
-			MaximumStableRise: 0.010,
-			MinimumSamples:    2,
-		},
-	)
 }

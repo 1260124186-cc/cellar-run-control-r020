@@ -19,6 +19,7 @@ type vesselView struct {
 	State       domain.VesselState `json:"state"`
 	Version     int64              `json:"version"`
 	ActiveRunID *string            `json:"active_run_id"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 type runView struct {
@@ -28,6 +29,7 @@ type runView struct {
 	VesselID     *string                     `json:"vessel_id"`
 	Observations []domain.GravityObservation `json:"observations"`
 	Metrics      *domain.RunMetrics          `json:"metrics"`
+	UpdatedAt    time.Time                   `json:"updated_at"`
 }
 
 type pairView struct {
