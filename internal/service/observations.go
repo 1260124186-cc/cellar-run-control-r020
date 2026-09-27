@@ -114,12 +114,5 @@ func completionObservationWindow(
 ) domain.ObservationWindow {
 	observations := make([]domain.GravityObservation, len(run.Observations))
 	copy(observations, run.Observations)
-	return domain.NewObservationWindow(
-		observations,
-		domain.ObservationWindowPolicy{
-			TrimTrailingRise:  true,
-			MaximumStableRise: 0.010,
-			MinimumSamples:    2,
-		},
-	)
+	return domain.NewObservationWindow(observations)
 }
